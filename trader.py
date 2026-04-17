@@ -20,16 +20,18 @@ PRODUCT_INTARIAN = 'INTARIAN_PEPPER_ROOT'
 
 POSITION_LIMIT = 80
 
-# ASH 均值回归参数
+# ASH 均值回归参数 - 禁用（成本过高）
 ASH_CENTER = 10_000
 ASH_BUY_THRESHOLD = 9_985
 ASH_SELL_THRESHOLD = 10_015
-ASH_STOP_LOSS_PCT = 0.002  # 0.2%
+ASH_STOP_LOSS_PCT = 0.002
+ASH_MAX_POSITION = 0  # 禁用ASH交易
 
-# INTARIAN 动量参数
+# INTARIAN 动量参数 - 优化版
 INTARIAN_LOOKBACK = 20
-INTARIAN_STOP_LOSS_PCT = 0.02  # 2%
-INTARIAN_TAKE_PROFIT_PCT = 0.03  # 3%
+INTARIAN_STOP_LOSS_PCT = 0.015  # 1.5% 止损
+INTARIAN_TRAILING_STOP_PCT = 0.025  # 2.5% 移动止损
+INTARIAN_MAX_POSITION = 80  # 允许的最大持仓（仓位限制80）
 
 # OBI 过滤参数
 OBI_THRESHOLD = 0.15
@@ -86,28 +88,28 @@ def compute_atr(highs: List[float], lows: List[float], closes: List[float], peri
 
 class MomentumStrategy:
     """
-    INTARIAN_PEPPER_ROOT 趋势动量策略
+    INTARIAN_PEPPER_ROOT 趋势动量策略（优化版）
 
     逻辑：
-    - 趋势跟踪：价格突破时买入
-    - 移动止损：保护利润
-    - 仓位管理：不超过限制
+    - 金字塔加仓：趋势确认后分批买入
+    - 移动止损：让利润奔跑
+    - 仓位管理：最多60%仓位
     """
 
     def __init__(self):
-        self.position_limit = POSITION_LIMIT
+        self.position_limit = INTARIAN_MAX_POSITION
         self.price_history: Dict[str, List[float]] = {
             PRODUCT_INTARIAN: []
         }
         self.entry_price: Dict[str, float] = {}
         self.highest_price: Dict[str, float] = {}
+        self.consecutive_uptrend = 0  # 连续上升趋势计数
 
     def update_history(self, product: str, price: float):
         """更新价格历史"""
         if product not in self.price_history:
             self.price_history[product] = []
         self.price_history[product].append(price)
-        # 保留足够的历史数据
         if len(self.price_history[product]) > 100:
             self.price_history[product] = self.price_history[product][-100:]
 
@@ -117,14 +119,6 @@ class MomentumStrategy:
                position: int) -> List[Order]:
         """
         生成交易信号
-
-        Args:
-            state: TradingState
-            product: 产品名
-            position: 当前持仓
-
-        Returns:
-            订单列表
         """
         orders = []
         od = state.order_depths.get(product)
@@ -144,86 +138,92 @@ class MomentumStrategy:
         if product not in self.highest_price:
             self.highest_price[product] = mid_price
 
-        # 趋势判断：基于最近N个价格的方向
         history = self.price_history.get(product, [])
         if len(history) < 5:
             return orders
 
-        # 计算短期均线
+        # 计算均线
         short_ma = sum(history[-5:]) / 5
         long_ma = sum(history[-10:]) / 10 if len(history) >= 10 else short_ma
 
-        # 趋势信号：短期均线 > 长期均线
+        # 趋势判断
         is_uptrend = short_ma > long_ma
-
-        # 突破信号：价格创N日新高
         lookback_high = max(history[-INTARIAN_LOOKBACK:]) if len(history) >= INTARIAN_LOOKBACK else max(history)
-        is_breakout = mid_price > lookback_high * 0.998  # 接近新高
+        is_breakout = mid_price > lookback_high * 0.999
 
-        # 可用仓位
+        # 更新连续上升计数
+        if is_uptrend:
+            self.consecutive_uptrend += 1
+        else:
+            self.consecutive_uptrend = 0
+
         available = self.position_limit - position
 
-        # 入场逻辑：上升趋势 + 突破
+        # 入场逻辑：确认上升趋势后买入
         if position == 0:
-            if is_uptrend and is_breakout:
-                # 买入信号
+            if is_uptrend and self.consecutive_uptrend >= 3:
+                # 买入信号 - 使用市场价买入
                 best_ask = min(od.sell_orders.keys())
-                volume = min(available, 10)  # 每次最多买10手
+                volume = min(available, 20)  # 首批买入20手
                 if volume > 0:
                     orders.append(Order(product, int(best_ask), volume))
                     self.entry_price[product] = mid_price
                     self.highest_price[product] = mid_price
 
+        # 加仓逻辑：趋势延续且未满仓
+        elif 0 < position < self.position_limit:
+            if is_uptrend and is_breakout and self.consecutive_uptrend >= 5:
+                best_ask = min(od.sell_orders.keys())
+                volume = min(available, 20)
+                if volume > 0:
+                    orders.append(Order(product, int(best_ask), volume))
+
         # 持仓管理
         elif position > 0:
-            # 更新最高价
             if mid_price > self.highest_price[product]:
                 self.highest_price[product] = mid_price
 
             entry = self.entry_price[product]
+            peak = self.highest_price[product]
 
-            # 止损检查
+            # 止损：价格跌破入场价-2%
             if mid_price < entry * (1 - INTARIAN_STOP_LOSS_PCT):
-                # 止损卖出
                 orders.append(Order(product, int(mid_price), -position))
                 self.entry_price[product] = 0
+                self.consecutive_uptrend = 0
                 return orders
 
-            # 止盈检查
-            if mid_price > entry * (1 + INTARIAN_TAKE_PROFIT_PCT):
-                # 止盈卖出一半
-                sell_qty = min(position // 2, 10)
-                if sell_qty > 0:
-                    orders.append(Order(product, int(mid_price), -sell_qty))
-
-            # 移动止损：价格从高点回撤超过2%则退出
-            trailing_stop = self.highest_price[product] * (1 - 0.015)
+            # 移动止损：从高点回撤超过2.5%则退出
+            trailing_stop = peak * (1 - INTARIAN_TRAILING_STOP_PCT)
             if mid_price < trailing_stop:
                 orders.append(Order(product, int(mid_price), -position))
                 self.entry_price[product] = 0
+                self.consecutive_uptrend = 0
+                return orders
 
         return orders
 
 
 class MeanReversionStrategy:
     """
-    ASH_COATED_OSMIUM 均值回归策略
+    ASH_COATED_OSMIUM 均值回归策略（优化版）
 
     逻辑：
-    - 价格偏离均值时买入
-    - OBI过滤确认方向
+    - 价格低于均值时买入
+    - 价格回到均值时卖出
     - 快速止损
     """
 
     def __init__(self):
-        self.position_limit = POSITION_LIMIT
+        self.position_limit = ASH_MAX_POSITION
         self.price_history: Dict[str, List[float]] = {
             PRODUCT_ASH: []
         }
         self.entry_price: Dict[str, float] = {}
 
     def update_history(self, product: str, price: float):
-        """更新价格历史"""
+        if price <= 0:
+            return
         if product not in self.price_history:
             self.price_history[product] = []
         self.price_history[product].append(price)
@@ -234,17 +234,6 @@ class MeanReversionStrategy:
                state: TradingState,
                product: str,
                position: int) -> List[Order]:
-        """
-        生成交易信号
-
-        Args:
-            state: TradingState
-            product: 产品名
-            position: 当前持仓
-
-        Returns:
-            订单列表
-        """
         orders = []
         od = state.order_depths.get(product)
 
@@ -257,25 +246,18 @@ class MeanReversionStrategy:
 
         self.update_history(product, mid_price)
 
-        # OBI过滤
-        obi = compute_obi(od)
-
-        # 计算动态中心线（基于最近均值）
         history = self.price_history.get(product, [])
-        if len(history) >= 10:
-            center = sum(history[-10:]) / 10
-        else:
-            center = ASH_CENTER
+        if len(history) < 5:
+            return orders
 
-        # 可用仓位
+        center = sum(history[-10:]) / 10 if len(history) >= 10 else ASH_CENTER
         available = self.position_limit - position
 
-        # 入场逻辑：价格低于阈值 + OBI偏多
+        # 入场逻辑：价格低于阈值
         if position == 0:
-            if mid_price <= ASH_BUY_THRESHOLD and obi > OBI_THRESHOLD:
-                # 买入信号
+            if mid_price <= ASH_BUY_THRESHOLD:
                 best_ask = min(od.sell_orders.keys())
-                volume = min(available, 15)
+                volume = min(available, 20)
                 if volume > 0:
                     orders.append(Order(product, int(best_ask), volume))
                     self.entry_price[product] = mid_price
@@ -284,16 +266,16 @@ class MeanReversionStrategy:
         elif position > 0:
             entry = self.entry_price.get(product, mid_price)
 
-            # 止损：价格没有回归则止损
-            if mid_price > center * 1.001:  # 价格继续偏离
-                # 全部卖出
+            # 止损：价格继续下跌
+            if mid_price < entry * (1 - ASH_STOP_LOSS_PCT):
                 orders.append(Order(product, int(mid_price), -position))
+                self.entry_price[product] = 0
                 return orders
 
-            # 止盈：价格回到中心线附近
-            if mid_price >= center * 0.9995:
-                # 全部卖出
+            # 止盈：价格回到中心线
+            if mid_price >= center:
                 orders.append(Order(product, int(mid_price), -position))
+                self.entry_price[product] = 0
                 return orders
 
         return orders
