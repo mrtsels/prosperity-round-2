@@ -1,7 +1,7 @@
 {
   "trader": "trader.py",
   "dataset": "round2",
-  "raw_output": "trader: trader.py\ndataset: round2\nmode: fast\nartifacts: log-only\nSET             DAY    TICKS  OWN_TRADES    FINAL_PNL  RUN_DIR\nD-1              -1    10000         732     98657.00  runs/backtest-1776535246765-round2-day-1\nD=0               0    10000         713     98204.00  runs/backtest-1776535246765-round2-day-0\nD+1               1    10000         722     98573.00  runs/backtest-1776535246765-round2-day-1\nTOTAL             -    30000        2167    295434.00  -\n\nPRODUCT                     D-1        D=0        D+1      TOTAL\nINTARIAN_PEPPER_ROOT   79311.00   79273.00   79172.00  237756.00\nASH_COATED_OSMIUM      19346.00   18931.00   19401.00   57678.00\n",
+  "raw_output": "trader: trader.py\ndataset: round2\nmode: fast\nartifacts: log-only\nSET             DAY    TICKS  OWN_TRADES    FINAL_PNL  RUN_DIR\nD-1              -1    10000         732     98657.00  runs/backtest-1776535658620-round2-day-1\nD=0               0    10000         713     98204.00  runs/backtest-1776535658620-round2-day-0\nD+1               1    10000         722     98573.00  runs/backtest-1776535658620-round2-day-1\nTOTAL             -    30000        2167    295434.00  -\n\nPRODUCT                     D-1        D=0        D+1      TOTAL\nINTARIAN_PEPPER_ROOT   79311.00   79273.00   79172.00  237756.00\nASH_COATED_OSMIUM      19346.00   18931.00   19401.00   57678.00\n",
   "total_trades": 2167,
   "total_pnl": 295434.0,
   "intarian_pnl": 237756.0,
