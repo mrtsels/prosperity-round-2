@@ -66,7 +66,7 @@ cargo --version
 
 ```bash
 # 进入 backtester 目录
-cd /Users/minimx/Downloads/prosperity_rust_backtester
+cd $HOME/Downloads/prosperity_rust_backtester
 
 # 加载 Rust 环境
 source "$HOME/.cargo/env"
