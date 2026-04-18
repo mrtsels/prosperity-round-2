@@ -72,10 +72,10 @@ cd $HOME/Downloads/prosperity_rust_backtester
 source "$HOME/.cargo/env"
 
 # 运行回测（默认测试 round2 数据集）
-make backtest TRADER=/Users/minimx/Downloads/ROUND_2/trader.py
+make backtest TRADER=$HOME/Downloads/ROUND_2/trader.py
 
 # 或使用 rust_backtester 命令
-rust_backtester --trader /Users/minimx/Downloads/ROUND_2/trader.py --dataset round2
+rust_backtester --trader $HOME/Downloads/ROUND_2/trader.py --dataset round2
 ```
 
 ### 可用命令
