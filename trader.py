@@ -26,6 +26,7 @@ ASH_OUTER_STEP = 2.0
 ASH_IMBALANCE_WEIGHT = 0.0
 ASH_NEUTRAL_SIZE_1 = 8
 ASH_NEUTRAL_SIZE_2 = 4
+ASH_INVENTORY_THRESHOLD = 40
 
 INT_MA_SHORT = 5
 INT_MA_LONG = 8
@@ -36,6 +37,10 @@ INT_FIRST_SIZE = 20
 INT_ADD_SIZE = 20
 INT_STOP_LOSS_PCT = 0.015
 INT_TRAILING_STOP_PCT = 0.025
+INT_SCALP_SIZE = 20
+INT_VOL_WINDOW = 20
+INT_PARTIAL_TAKE_VOL_MULT = 1.2
+INT_REBUY_VOL_MULT = 0.35
 
 
 def best_bid_ask(order_depth: OrderDepth) -> Tuple[int, int]:
@@ -140,10 +145,10 @@ class Trader:
         buy_quote_2 = min(best_bid, int(fair - outer_width))
         sell_quote_2 = max(best_ask, int(fair + outer_width))
 
-        if temp_pos > 10:
+        if temp_pos > ASH_INVENTORY_THRESHOLD:
             buy_size_1, buy_size_2 = 2, 1
             sell_size_1, sell_size_2 = 8, 4
-        elif temp_pos < -10:
+        elif temp_pos < -ASH_INVENTORY_THRESHOLD:
             buy_size_1, buy_size_2 = 8, 4
             sell_size_1, sell_size_2 = 2, 1
         else:
@@ -186,6 +191,7 @@ class Trader:
         entry_price = state_data.get("entry_price", 0.0)
         highest_price = state_data.get("highest_price", 0.0)
         consecutive_uptrend = state_data.get("consecutive_uptrend", 0)
+        scalp_state = state_data.get("scalp_state", "neutral")
 
         if len(history) < max(INT_MA_SHORT, INT_MA_LONG):
             state_out = {
@@ -193,12 +199,17 @@ class Trader:
                 "entry_price": entry_price,
                 "highest_price": highest_price,
                 "consecutive_uptrend": consecutive_uptrend,
+                "scalp_state": scalp_state,
             }
             return orders, state_out
 
         short_ma = sum(history[-INT_MA_SHORT:]) / INT_MA_SHORT
         long_ma = sum(history[-INT_MA_LONG:]) / INT_MA_LONG
         is_uptrend = short_ma > long_ma
+        vol_slice = history[-INT_VOL_WINDOW:] if len(history) >= INT_VOL_WINDOW else history
+        recent_vol = max(vol_slice) - min(vol_slice) if len(vol_slice) >= 2 else 0.0
+        take_threshold = short_ma + INT_PARTIAL_TAKE_VOL_MULT * recent_vol
+        rebuy_threshold = short_ma + INT_REBUY_VOL_MULT * recent_vol
 
         lookback_slice = history[-INT_LOOKBACK:] if len(history) >= INT_LOOKBACK else history
         lookback_high = max(lookback_slice)
@@ -218,12 +229,25 @@ class Trader:
                     orders.append(Order(product, int(best_ask), volume))
                     entry_price = mid
                     highest_price = mid
+                    scalp_state = "neutral"
         elif 0 < position < limit:
             if is_uptrend and is_breakout and consecutive_uptrend >= INT_ADD_CONSEC:
                 volume = min(available, INT_ADD_SIZE)
                 if volume > 0:
                     orders.append(Order(product, int(best_ask), volume))
                     highest_price = max(highest_price, mid)
+
+            if (
+                is_uptrend
+                and recent_vol > 0
+                and position > INT_SCALP_SIZE
+                and scalp_state != "waiting_rebuy"
+                and mid >= take_threshold
+            ):
+                trim_qty = min(INT_SCALP_SIZE, position)
+                if trim_qty > 0:
+                    orders.append(Order(product, int(best_bid), -trim_qty))
+                    scalp_state = "waiting_rebuy"
 
         elif position > 0:
             highest_price = max(highest_price, mid)
@@ -233,6 +257,7 @@ class Trader:
                 entry_price = 0.0
                 highest_price = 0.0
                 consecutive_uptrend = 0
+                scalp_state = "neutral"
             else:
                 trailing_stop = highest_price * (1 - INT_TRAILING_STOP_PCT) if highest_price > 0 else 0.0
                 if trailing_stop > 0 and mid < trailing_stop:
@@ -240,12 +265,37 @@ class Trader:
                     entry_price = 0.0
                     highest_price = 0.0
                     consecutive_uptrend = 0
+                    scalp_state = "neutral"
+                else:
+                    if (
+                        is_uptrend
+                        and recent_vol > 0
+                        and position > INT_SCALP_SIZE
+                        and scalp_state != "waiting_rebuy"
+                        and mid >= take_threshold
+                    ):
+                        trim_qty = min(INT_SCALP_SIZE, position)
+                        if trim_qty > 0:
+                            orders.append(Order(product, int(best_bid), -trim_qty))
+                            scalp_state = "waiting_rebuy"
+                    elif (
+                        scalp_state == "waiting_rebuy"
+                        and is_uptrend
+                        and recent_vol > 0
+                        and mid <= rebuy_threshold
+                        and available > 0
+                    ):
+                        rebuy_qty = min(INT_SCALP_SIZE, available)
+                        if rebuy_qty > 0:
+                            orders.append(Order(product, int(best_ask), rebuy_qty))
+                            scalp_state = "neutral"
 
         state_out = {
             "history": history,
             "entry_price": entry_price,
             "highest_price": highest_price,
             "consecutive_uptrend": consecutive_uptrend,
+            "scalp_state": scalp_state,
         }
         return orders, state_out
 
