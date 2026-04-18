@@ -328,3 +328,70 @@ class Trader:
             "intarian": intarian_state,
         })
         return result, conversions, trader_data
+
+
+# ==================== 回测入口 ====================
+
+if __name__ == "__main__":
+    import os
+    import sys
+    import subprocess
+    import json
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    cache_dir = os.path.expanduser("~/Library/Caches/rust_backtester/target/debug")
+    backtester_bin = os.path.join(cache_dir, "rust_backtester")
+    backtester_dir = os.path.expanduser("~/Downloads/prosperity_rust_backtester")
+
+    if not os.path.exists(backtester_bin):
+        print(f"Error: backtester not found. Run 'cd {backtester_dir} && make backtest' first")
+        sys.exit(1)
+
+    result = subprocess.run(
+        [backtester_bin, '--trader', f'{script_dir}/trader.py', '--dataset', 'round2', '--products', 'full'],
+        capture_output=True, text=True, cwd=backtester_dir
+    )
+    result_file = result.stdout + result.stderr
+
+    print(result_file)
+
+    # 解析输出提取关键数据
+    lines = result_file.strip().split("\n")
+    summary = {
+        "trader": "trader.py",
+        "dataset": "round2",
+        "raw_output": result_file,
+    }
+
+    for line in lines:
+        if line.startswith("TOTAL"):
+            parts = line.split()
+            # TOTAL行: TOTAL  -    30000        2167    295434.00  -
+            # 列:     0      1    2           3         4           5
+            # 找列 - TICKS=30000, TRADES=2167, PNL=295434.00
+            for i, p in enumerate(parts):
+                if p == "TOTAL" or p == "-":
+                    continue
+                try:
+                    val = float(p.replace(",", ""))
+                except ValueError:
+                    continue
+                # TRADES在第3列(0-indexed)，通常2000-3000
+                if i == 3 and 1000 < val < 10000:
+                    summary["total_trades"] = int(val)
+                # PNL在第4列(0-indexed)，通常>100000
+                if i == 4 and val > 100000:
+                    summary["total_pnl"] = val
+        if "ASH_COATED_OSMIUM" in line:
+            parts = line.split()
+            summary["ash_pnl"] = float(parts[-1].replace(",", ""))
+        if "INTARIAN_PEPPER_ROOT" in line:
+            parts = line.split()
+            summary["intarian_pnl"] = float(parts[-1].replace(",", ""))
+
+    # 保存结果
+    output_path = os.path.join(script_dir, "backtest_result.json")
+    with open(output_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"\n结果已保存到: {output_path}")
